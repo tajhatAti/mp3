@@ -2,122 +2,170 @@ import os
 import re
 import threading
 import requests
+import subprocess
+import uuid
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import telebot
 
 # ===================== CONFIG =====================
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
+RAPID_API_KEY = os.environ.get("RAPID_API_KEY", "YOUR_RAPIDAPI_KEY_HERE")
+
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# ইউটিউব লিংক ডিটেক্ট করার জন্য Regex
 YOUTUBE_REGEX = r'(https?://)?(www\.)?(youtube\.com|youtu\.be|music\.youtube\.com)/[^\s]+'
 
-# ===================== Y2MATE BACKEND SCRAPER =====================
-def fetch_mp3_link(youtube_url):
-    """Y2Mate ব্যাকএন্ড স্ক্র্যাপ করে সরাসরি হাই-স্পিড MP3 ডাউনলোড লিংক বের করবে"""
-    # ১১ অক্ষরের ভিডিও আইডি এক্সট্রাক্ট করা হচ্ছে
+# ===================== METHOD 1: yt-dlp =====================
+def try_ytdlp(youtube_url):
+    out_file = f"/tmp/{uuid.uuid4().hex}.mp3"
+    cmd = [
+        "yt-dlp",
+        "--no-playlist",
+        "--extract-audio",
+        "--audio-format", "mp3",
+        "--audio-quality", "128K",
+        "--output", out_file,
+        "--no-warnings",
+        "--quiet",
+        "--socket-timeout", "15",
+        youtube_url
+    ]
+    try:
+        result = subprocess.run(cmd, timeout=60, capture_output=True, text=True)
+        if result.returncode == 0 and os.path.exists(out_file):
+            return out_file
+        print(f"[yt-dlp] Failed: {result.stderr[:200]}")
+        return None
+    except subprocess.TimeoutExpired:
+        print("[yt-dlp] Timeout")
+        return None
+    except FileNotFoundError:
+        print("[yt-dlp] Not installed")
+        return None
+    except Exception as e:
+        print(f"[yt-dlp] Error: {e}")
+        return None
+
+# ===================== METHOD 2: RapidAPI =====================
+def try_rapidapi(youtube_url):
     video_id_match = re.search(r'(?:v=|\/|embed\/|shorts\/)([0-9A-Za-z_-]{11})', youtube_url)
     if not video_id_match:
         return None
     video_id = video_id_match.group(1)
-    
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "X-Requested-With": "XMLHttpRequest",
-        "Referer": "https://www.y2mate.com/"
-    }
-    
+
     try:
-        # স্টেপ ১: ভিডিও অ্যানালাইসিস করে টোকেন নেওয়া
-        analyze_url = "https://www.y2mate.com/mates/enMates/analyzeV2/ajax"
-        payload = {
-            "url": f"https://www.youtube.com/watch?v={video_id}",
-            "q_auto": 0,
-            "ajax": 1
+        headers = {
+            "X-RapidAPI-Key": RAPID_API_KEY,
+            "X-RapidAPI-Host": "yt-mp3.p.rapidapi.com"
         }
-        
-        res = requests.post(analyze_url, data=payload, headers=headers, timeout=12)
+        res = requests.get(
+            "https://yt-mp3.p.rapidapi.com/dl",
+            params={"id": video_id},
+            headers=headers,
+            timeout=15
+        )
         if res.status_code == 200:
             data = res.json()
-            links = data.get("links", {})
-            mp3_data = links.get("mp3", {}) or links.get("audio", {})
-            
-            if mp3_data:
-                # প্রথম উপলব্ধ অডিও কোয়ালিটির (যেমন ১২৮kbps) 'k' টোকেন নেওয়া হচ্ছে
-                first_key = list(mp3_data.keys())[0]
-                k_token = mp3_data[first_key].get("k")
-                
-                # স্টেপ ২: টোকেন ব্যবহার করে ডিরেক্ট ডাউনলোড লিংক জেনারেট করা
-                convert_url = "https://www.y2mate.com/mates/enMates/convertV2/ajax"
-                convert_payload = {
-                    "vid": video_id,
-                    "k": k_token
-                }
-                
-                res_conv = requests.post(convert_url, data=convert_payload, headers=headers, timeout=12)
-                if res_conv.status_code == 200:
-                    conv_data = res_conv.json()
-                    if conv_data.get("status") == "ok":
-                        return conv_data.get("dlink") # ডিরেক্ট ডাউনলোড ইউআরএল
-                        
+            if data.get("status") == "ok":
+                return data.get("msg")
+        print(f"[RapidAPI] Failed: {res.status_code} {res.text[:100]}")
+        return None
     except Exception as e:
-        print(f"[-] Scraper Error: {e}")
-        
-    return None
+        print(f"[RapidAPI] Error: {e}")
+        return None
 
-# ===================== TELEGRAM HANDLER =====================
+# ===================== COMBINED DOWNLOADER =====================
+def get_mp3(youtube_url):
+    print("[*] Trying yt-dlp...")
+    result = try_ytdlp(youtube_url)
+    if result:
+        return result, "file"
+
+    print("[*] yt-dlp failed, trying RapidAPI...")
+    result = try_rapidapi(youtube_url)
+    if result:
+        return result, "url"
+
+    return None, None
+
+# ===================== HANDLERS =====================
 @bot.message_handler(commands=['start'])
 def start_command(message):
-    bot.reply_to(message, "👋 {user} আমাকে যেকোনো ইউটিউব বা ইউটিউব মিউজিকের লিংক পাঠাও।\n"
-                          "আমি সরাসরি হাই-স্পিড সার্ভার থেকে সেটিকে MP3 তে কনভার্ট করে পাঠিয়ে দেব।\n\n"
-                          "✨ রেন্ডার ২৪/৭ মোডে সম্পূর্ণ বিজ্ঞাপন মুক্ত সেবা।")
+    bot.reply_to(message,
+        "🎵 <b>YouTube MP3 Bot</b>\n\n"
+        "যেকোনো YouTube লিংক পাঠাও → MP3 পাবে!\n\n"
+        "✅ Supports: youtube.com, youtu.be, music.youtube.com\n"
+        "⚡ Render 24/7 Active",
+        parse_mode='HTML'
+    )
 
 @bot.message_handler(func=lambda message: True)
-def handle_youtube_link(message):
+def handle_link(message):
     match = re.search(YOUTUBE_REGEX, message.text)
-    
-    if match:
-        extracted_url = match.group(0)
-        msg = bot.reply_to(message, "⏳ লিংক প্রসেস করা হচ্ছে... একটু অপেক্ষা করো।")
-        
-        # স্ক্র্যাপার রান করা হচ্ছে
-        mp3_direct_url = fetch_mp3_link(extracted_url)
-        
-        if mp3_direct_url:
-            try:
-                bot.edit_message_text("📤 কনভার্ট সম্পন্ন! টেলিগ্রামে অডিও পাঠানো হচ্ছে...", message.chat.id, msg.message_id)
-                
-                # সরাসরি অডিও ইউআরএল টেলিগ্রামে সেন্ড (সার্ভার লোড ০%)
+    if not match:
+        bot.reply_to(message, "❌ YouTube লিংক পাঠাও!")
+        return
+
+    url = match.group(0)
+    if not url.startswith("http"):
+        url = "https://" + url
+
+    msg = bot.reply_to(message, "⏳ Processing...")
+
+    result, result_type = get_mp3(url)
+
+    if not result:
+        bot.edit_message_text(
+            "❌ Download হয়নি। লিংক check করো বা পরে try করো।",
+            message.chat.id, msg.message_id
+        )
+        return
+
+    try:
+        bot.edit_message_text("📤 Sending audio...", message.chat.id, msg.message_id)
+
+        if result_type == "file":
+            with open(result, 'rb') as f:
                 bot.send_audio(
-                    chat_id=message.chat.id, 
-                    audio=mp3_direct_url, 
-                    title="Audio Tracks", 
-                    performer="Cloud High-Speed Downloader",
+                    chat_id=message.chat.id,
+                    audio=f,
                     reply_to_message_id=message.message_id
                 )
-                bot.delete_message(message.chat.id, msg.message_id)
-                
-            except Exception as e:
-                print(f"Telegram Upload Error: {e}")
-                bot.edit_message_text("❌ ফাইলটি টেলিগ্রামে পাঠাতে সমস্যা হয়েছে। ভিডিওর সাইজ বা ডিউরেশন অতিরিক্ত বড় হতে পারে।", message.chat.id, msg.message_id)
+            os.remove(result)
         else:
-            bot.edit_message_text("❌ অডিও লিংক জেনারেট করা যায়নি। দয়া করে লিংকটি আবার চেক করো বা অন্য কোনো লিংক ট্রাই করো।", message.chat.id, msg.message_id)
+            bot.send_audio(
+                chat_id=message.chat.id,
+                audio=result,
+                reply_to_message_id=message.message_id
+            )
 
-# ===================== KEEP ALIVE SERVER =====================
-class DummyServer(BaseHTTPRequestHandler):
+        bot.delete_message(message.chat.id, msg.message_id)
+
+    except Exception as e:
+        print(f"[Send Error] {e}")
+        bot.edit_message_text(
+            f"❌ File পাঠাতে সমস্যা: {str(e)[:100]}",
+            message.chat.id, msg.message_id
+        )
+        if result_type == "file" and os.path.exists(result):
+            os.remove(result)
+
+# ===================== KEEP ALIVE =====================
+class PingServer(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"24/7 Render Stream Active!")
+        self.wfile.write(b"YT MP3 Bot - ALIVE!")
+    def log_message(self, *args): pass
 
 def keep_alive():
     port = int(os.environ.get("PORT", 8080))
-    HTTPServer(('0.0.0.0', port), DummyServer).serve_forever()
+    HTTPServer(('0.0.0.0', port), PingServer).serve_forever()
 
 threading.Thread(target=keep_alive, daemon=True).start()
 
 # ===================== RUN =====================
 if __name__ == "__main__":
-    print("[+] Scraper-Based YT MP3 Bot Started for Render 24/7...")
-    bot.infinity_polling()
-    
+    print("[+] YT MP3 Bot started (yt-dlp → RapidAPI fallback)")
+    bot.infinity_polling(timeout=60, long_polling_timeout=30)
+        
