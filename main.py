@@ -13,7 +13,6 @@ bot = telebot.TeleBot(BOT_TOKEN)
 YOUTUBE_REGEX = r'(https?://)?(www\.)?(youtube\.com|youtu\.be|music\.youtube\.com)/[^\s]+'
 
 # ===================== MULTI-API COBALT LOGIC =====================
-# বিভিন্ন একটিভ Cobalt মিরর সার্ভারের লিস্ট (একটা ডাউন থাকলে আরেকটা কাজ করবে)
 COBALT_INSTANCES = [
     "https://api.cobalt.tools/api/json",
     "https://co.wuk.sh/api/json",
@@ -22,63 +21,72 @@ COBALT_INSTANCES = [
 ]
 
 def fetch_mp3_link(youtube_url):
-    """মাল্টিপল এপিআই মিরর চেক করে যেকোনো একটি থেকে MP3 লিংক বের করবে"""
-    payload = {
-        "url": youtube_url,
-        "isAudioOnly": True,
-        "audioFormat": "mp3",
-        "vQuality": "720"
-    }
+    """নতুন ও পুরোনো দুই ফরম্যাটের প্যারামিটার টেস্ট করে নিশ্চিত অডিও লিংক বের করবে"""
     headers = {
         "Accept": "application/json",
         "Content-Type": "application/json"
     }
     
-    # লিস্টের প্রতিটি সার্ভার একে একে ট্রাই করবে
     for idx, api_url in enumerate(COBALT_INSTANCES):
+        # ১. নতুন Cobalt v7 ফরম্যাট (downloadMode)
+        payload_new = {
+            "url": youtube_url,
+            "downloadMode": "audio",
+            "audioFormat": "mp3"
+        }
         try:
-            print(f"[+] Trying Cobalt Instance {idx}: {api_url}")
-            response = requests.post(api_url, json=payload, headers=headers, timeout=12)
-            
+            print(f"[+] Trying New API Format on Instance {idx}")
+            response = requests.post(api_url, json=payload_new, headers=headers, timeout=10)
             if response.status_code == 200:
                 data = response.json()
-                if data.get("status") == "stream":
-                    print(f"✅ Success with Instance {idx}")
-                    return data.get("url")  # লিংক পেলে লুপ এখানেই শেষ
-                    
-            print(f"[-] Instance {idx} failed with status: {response.status_code}")
-            continue  # ব্যর্থ হলে পরের সার্ভারে যাবে
-            
+                if "url" in data:
+                    print(f"✅ Success with New Format on Instance {idx}")
+                    return data.get("url")
         except Exception as e:
-            print(f"[-] Instance {idx} Request Error: {e}")
-            continue  # এরর আসলে পরের সার্ভারে যাবে
+            print(f"[-] New Format Error on Instance {idx}: {e}")
             
-    return None  # সব সার্ভার ফেইল করলেই কেবল None রিটার্ন হবে
+        # ২. ব্যাকআপ: যদি কোনো সার্ভার এখনও পুরোনো ভার্সনে চলে (isAudioOnly)
+        payload_old = {
+            "url": youtube_url,
+            "isAudioOnly": True,
+            "audioFormat": "mp3"
+        }
+        try:
+            print(f"[+] Trying Old API Format on Instance {idx}")
+            response = requests.post(api_url, json=payload_old, headers=headers, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                if "url" in data:
+                    print(f"✅ Success with Old Format on Instance {idx}")
+                    return data.get("url")
+        except Exception as e:
+            print(f"[-] Old Format Error on Instance {idx}: {e}")
+            
+    return None
 
 # ===================== TELEGRAM HANDLER =====================
 @bot.message_handler(commands=['start'])
 def start_command(message):
-    bot.reply_to(message, "👋 Hey! আমাকে যেকোনো ইউটিউব ভিডিওর লিংক পাঠাও।\n"
-                          "আমি স্বয়ংক্রিয়ভাবে সেটিকে উচ্চমানের MP3 তে কনভার্ট করে পাঠিয়ে দেব।\n\n"
+    bot.reply_to(message, "👋 হ্যালো! আমাকে যেকোনো ইউটিউব ভিডিওর লিংক পাঠাও।\n"
+                          "আমি স্বয়ংক্রিয়ভাবে সেটিকে উচ্চমানের MP3 তেকনভার্ট করে পাঠিয়ে দেব।\n\n"
                           "✨ সম্পূর্ণ বিজ্ঞাপন মুক্ত এবং আনলিমিটেড।")
 
 @bot.message_handler(func=lambda message: True)
 def handle_youtube_link(message):
-    # টেক্সটের ভেতরে কোনো ইউটিউব লিংক আছে কিনা চেক করা হচ্ছে
     match = re.search(YOUTUBE_REGEX, message.text)
     
     if match:
         extracted_url = match.group(0)
         msg = bot.reply_to(message, "⏳ ইউটিউব লিংক পাওয়া গেছে। অডিও প্রসেস করছি, একটু অপেক্ষা করো...")
         
-        # Cobalt API থেকে অডিও লিংক নেওয়া হচ্ছে (ব্যাকআপ সিস্টেমসহ)
+        # এপিআই ফেচিং
         mp3_direct_url = fetch_mp3_link(extracted_url)
         
         if mp3_direct_url:
             try:
                 bot.edit_message_text("📤 কনভার্ট সম্পন্ন! টেলিগ্রামে আপলোড হচ্ছে...", message.chat.id, msg.message_id)
                 
-                # সরাসরি URL পাস করা হচ্ছে, সার্ভারের ডিস্ক বা র‍্যাম ব্যবহার হবে না
+                # সরাসরি অডিও ইউআরএল টেলিগ্রামে সেন্ড
                 bot.send_audio(
                     chat_id=message.chat.id, 
                     audio=mp3_direct_url, 
@@ -92,7 +100,7 @@ def handle_youtube_link(message):
                 print(f"Telegram Upload Error: {e}")
                 bot.edit_message_text("❌ ফাইলটি টেলিগ্রামে পাঠাতে সমস্যা হয়েছে। ফাইল সাইজ অনেক বড় হতে পারে।", message.chat.id, msg.message_id)
         else:
-            bot.edit_message_text("❌ দুঃখিত, এই মুহূর্তে সবকটি ব্যাকআপ সার্ভার ব্যস্ত আছে। দয়া করে কিছুক্ষণ পর আবার চেষ্টা করো।", message.chat.id, msg.message_id)
+            bot.edit_message_text("❌ অডিও লিংক জেনারেট করা যায়নি। লিংকটি আবার চেক করো অথবা অন্য কোনো ভিডিও ট্রাই করো।", message.chat.id, msg.message_id)
 
 # ===================== KEEP ALIVE SERVER =====================
 class DummyServer(BaseHTTPRequestHandler):
@@ -109,6 +117,6 @@ threading.Thread(target=keep_alive, daemon=True).start()
 
 # ===================== RUN =====================
 if __name__ == "__main__":
-    print("[+] YouTube MP3 Bot Started Successfully...")
+    print("[+] YouTube MP3 Bot Started with Dual-Payload Support...")
     bot.infinity_polling()
-            
+    
