@@ -12,36 +12,53 @@ bot = telebot.TeleBot(BOT_TOKEN)
 # ইউটিউব লিংক ডিটেক্ট করার জন্য Regex
 YOUTUBE_REGEX = r'(https?://)?(www\.)?(youtube\.com|youtu\.be|music\.youtube\.com)/[^\s]+'
 
-# ===================== COBALT API LOGIC =====================
+# ===================== MULTI-API COBALT LOGIC =====================
+# বিভিন্ন একটিভ Cobalt মিরর সার্ভারের লিস্ট (একটা ডাউন থাকলে আরেকটা কাজ করবে)
+COBALT_INSTANCES = [
+    "https://api.cobalt.tools/api/json",
+    "https://co.wuk.sh/api/json",
+    "https://cobalt.api.v0.pw/api/json",
+    "https://api.cobalt.club/api/json"
+]
+
 def fetch_mp3_link(youtube_url):
-    """Cobalt API ব্যবহার করে ইউটিউব ভিডিওকে MP3 লিংকে কনভার্ট করে"""
-    api_url = "https://api.cobalt.tools/api/json"
+    """মাল্টিপল এপিআই মিরর চেক করে যেকোনো একটি থেকে MP3 লিংক বের করবে"""
+    payload = {
+        "url": youtube_url,
+        "isAudioOnly": True,
+        "audioFormat": "mp3",
+        "vQuality": "720"
+    }
     headers = {
         "Accept": "application/json",
         "Content-Type": "application/json"
     }
-    payload = {
-        "url": youtube_url,
-        "isAudioOnly": True,    # শুধুমাত্র অডিও ডাউনলোড করবে
-        "audioFormat": "mp3",   # ফরম্যাট MP3 হবে
-        "vQuality": "720"       # ডিফল্ট কোয়ালিটি
-    }
     
-    try:
-        response = requests.post(api_url, json=payload, headers=headers, timeout=15)
-        if response.status_code == 200:
-            data = response.json()
-            if data.get("status") == "stream":
-                return data.get("url")  # ডিরেক্ট অডিও স্ট্রিম লিংক
-        return None
-    except Exception as e:
-        print(f"API Error: {e}")
-        return None
+    # লিস্টের প্রতিটি সার্ভার একে একে ট্রাই করবে
+    for idx, api_url in enumerate(COBALT_INSTANCES):
+        try:
+            print(f"[+] Trying Cobalt Instance {idx}: {api_url}")
+            response = requests.post(api_url, json=payload, headers=headers, timeout=12)
+            
+            if response.status_code == 200:
+                data = response.json()
+                if data.get("status") == "stream":
+                    print(f"✅ Success with Instance {idx}")
+                    return data.get("url")  # লিংক পেলে লুপ এখানেই শেষ
+                    
+            print(f"[-] Instance {idx} failed with status: {response.status_code}")
+            continue  # ব্যর্থ হলে পরের সার্ভারে যাবে
+            
+        except Exception as e:
+            print(f"[-] Instance {idx} Request Error: {e}")
+            continue  # এরর আসলে পরের সার্ভারে যাবে
+            
+    return None  # সব সার্ভার ফেইল করলেই কেবল None রিটার্ন হবে
 
 # ===================== TELEGRAM HANDLER =====================
 @bot.message_handler(commands=['start'])
 def start_command(message):
-    bot.reply_to(message, "👋 হ্যালো! আমাকে যেকোনো ইউটিউব ভিডিওর লিংক পাঠাও।\n"
+    bot.reply_to(message, "👋 Hey! আমাকে যেকোনো ইউটিউব ভিডিওর লিংক পাঠাও।\n"
                           "আমি স্বয়ংক্রিয়ভাবে সেটিকে উচ্চমানের MP3 তে কনভার্ট করে পাঠিয়ে দেব।\n\n"
                           "✨ সম্পূর্ণ বিজ্ঞাপন মুক্ত এবং আনলিমিটেড।")
 
@@ -54,7 +71,7 @@ def handle_youtube_link(message):
         extracted_url = match.group(0)
         msg = bot.reply_to(message, "⏳ ইউটিউব লিংক পাওয়া গেছে। অডিও প্রসেস করছি, একটু অপেক্ষা করো...")
         
-        # Cobalt API থেকে অডিও লিংক নেওয়া হচ্ছে
+        # Cobalt API থেকে অডিও লিংক নেওয়া হচ্ছে (ব্যাকআপ সিস্টেমসহ)
         mp3_direct_url = fetch_mp3_link(extracted_url)
         
         if mp3_direct_url:
@@ -75,7 +92,7 @@ def handle_youtube_link(message):
                 print(f"Telegram Upload Error: {e}")
                 bot.edit_message_text("❌ ফাইলটি টেলিগ্রামে পাঠাতে সমস্যা হয়েছে। ফাইল সাইজ অনেক বড় হতে পারে।", message.chat.id, msg.message_id)
         else:
-            bot.edit_message_text("❌ অ디오 লিংক জেনারেট করা যায়নি। এপিআই সাময়িকভাবে ব্যস্ত আছে, পরে চেষ্টা করো।", message.chat.id, msg.message_id)
+            bot.edit_message_text("❌ দুঃখিত, এই মুহূর্তে সবকটি ব্যাকআপ সার্ভার ব্যস্ত আছে। দয়া করে কিছুক্ষণ পর আবার চেষ্টা করো।", message.chat.id, msg.message_id)
 
 # ===================== KEEP ALIVE SERVER =====================
 class DummyServer(BaseHTTPRequestHandler):
@@ -94,3 +111,4 @@ threading.Thread(target=keep_alive, daemon=True).start()
 if __name__ == "__main__":
     print("[+] YouTube MP3 Bot Started Successfully...")
     bot.infinity_polling()
+            
