@@ -68,7 +68,7 @@ def fetch_mp3_link(youtube_url):
 # ===================== TELEGRAM HANDLER =====================
 @bot.message_handler(commands=['start'])
 def start_command(message):
-    bot.reply_to(message, "👋 হ্যালো! আমাকে যেকোনো ইউটিউব বা ইউটিউব মিউজিকের লিংক পাঠাও।\n"
+    bot.reply_to(message, "👋 {user} আমাকে যেকোনো ইউটিউব বা ইউটিউব মিউজিকের লিংক পাঠাও।\n"
                           "আমি সরাসরি হাই-স্পিড সার্ভার থেকে সেটিকে MP3 তে কনভার্ট করে পাঠিয়ে দেব।\n\n"
                           "✨ রেন্ডার ২৪/৭ মোডে সম্পূর্ণ বিজ্ঞাপন মুক্ত সেবা।")
 
