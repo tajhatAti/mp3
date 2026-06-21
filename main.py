@@ -119,4 +119,3 @@ threading.Thread(target=keep_alive, daemon=True).start()
 if __name__ == "__main__":
     print("[+] YouTube MP3 Bot Started with Dual-Payload Support...")
     bot.infinity_polling()
-    
